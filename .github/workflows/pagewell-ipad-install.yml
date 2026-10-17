@@ -1,7 +1,36 @@
 name: Pagewell iPad installation build
+run-name: Pagewell iPad ${{ inputs.version }} build ${{ inputs.build }}
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        type: string
+        required: true
+        default: '0.1.8'
+      build:
+        type: string
+        required: true
+        default: '1011'
+      source_tag:
+        type: string
+        required: true
+        default: 'v0.1.8'
+      source_asset:
+        type: string
+        required: true
+        default: 'Pagewell-0.1.8.apk'
+      source_sha256:
+        type: string
+        required: true
+      source_kind:
+        type: choice
+        options: [apk, web]
+        default: apk
+      notes:
+        type: string
+        required: true
+        default: 'Pagewell iPad update.'
 
 permissions:
   contents: write
@@ -16,21 +45,44 @@ jobs:
     timeout-minutes: 30
     env:
       GH_TOKEN: ${{ github.token }}
-      PAGEWELL_VERSION: 0.1.8
-      PAGEWELL_BUILD: 1010
-      PAGEWELL_APK_SHA256: ba54659d60cbc4d1429aea4892e3891db1e8cab4a7509266de4f055e7c46150c
-      PAGEWELL_BUILD_TAG: ipad-install-0.1.8-20261017
+      PAGEWELL_VERSION: ${{ inputs.version }}
+      PAGEWELL_BUILD: ${{ inputs.build }}
+      PAGEWELL_SOURCE_SHA256: ${{ inputs.source_sha256 }}
+      PAGEWELL_SOURCE_TAG: ${{ inputs.source_tag }}
+      PAGEWELL_SOURCE_ASSET: ${{ inputs.source_asset }}
+      PAGEWELL_SOURCE_KIND: ${{ inputs.source_kind }}
+      PAGEWELL_NOTES: ${{ inputs.notes }}
     steps:
       - name: Build an unsigned native iPad package from the published app
         shell: bash
         run: |
           set -euo pipefail
+          [[ "$PAGEWELL_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$PAGEWELL_BUILD" =~ ^[0-9]+$ ]]
+          [[ "$PAGEWELL_SOURCE_SHA256" =~ ^[a-f0-9]{64}$ ]]
+          [[ "$PAGEWELL_SOURCE_TAG" =~ ^[A-Za-z0-9_.-]+$ ]]
+          [[ "$PAGEWELL_SOURCE_ASSET" =~ ^[A-Za-z0-9_.-]+$ ]]
+          export PAGEWELL_BUILD_TAG="ipad-v$PAGEWELL_VERSION-b$PAGEWELL_BUILD"
           mkdir -p "$RUNNER_TEMP/pagewell-ipad"
           cd "$RUNNER_TEMP/pagewell-ipad"
-          gh release download "v$PAGEWELL_VERSION" --repo "$GITHUB_REPOSITORY" --pattern "Pagewell-$PAGEWELL_VERSION.apk" --output source.apk
-          echo "$PAGEWELL_APK_SHA256  source.apk" | shasum -a 256 --check
-          unzip -q source.apk 'assets/public/*' -d extracted
-          mv extracted/assets/public dist
+          gh release download "$PAGEWELL_SOURCE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$PAGEWELL_SOURCE_ASSET" --output source.zip
+          echo "$PAGEWELL_SOURCE_SHA256  source.zip" | shasum -a 256 --check
+          if [ "$PAGEWELL_SOURCE_KIND" = apk ]; then
+            unzip -q source.zip 'assets/public/*' -d extracted
+            mv extracted/assets/public dist
+          elif [ "$PAGEWELL_SOURCE_KIND" = web ]; then
+            mkdir dist
+            unzip -q source.zip -d dist
+          else exit 1; fi
+          test -f dist/index.html
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          path=Path('dist/index.html')
+          text=path.read_text()
+          assert text.count('<head>')==1
+          path.write_text(text.replace('<head>','<head><script>window.__PAGEWELL_IPAD_BUILD__='+str(int(os.environ['PAGEWELL_BUILD']))+';</script>',1))
+          PY
           cat > package.json <<'JSON'
           {"name":"pagewell-ipad","version":"0.1.8","private":true,"dependencies":{"@capacitor/core":"8.5.3","@capacitor/ios":"8.5.3","@capacitor/cli":"8.5.3"}}
           JSON
@@ -115,16 +167,21 @@ jobs:
           file "$APP/App" | grep -q arm64
           mkdir Payload
           ditto "$APP" Payload/Pagewell.app
-          ditto -c -k --sequesterRsrc --keepParent Payload "Pagewell-$PAGEWELL_VERSION-iPad-unsigned.ipa"
-          shasum -a 256 "Pagewell-$PAGEWELL_VERSION-iPad-unsigned.ipa" > SHA256SUMS.txt
+          ditto -c -k --sequesterRsrc --keepParent Payload "Pagewell-$PAGEWELL_VERSION-iPad-b$PAGEWELL_BUILD-unsigned.ipa"
+          shasum -a 256 "Pagewell-$PAGEWELL_VERSION-iPad-b$PAGEWELL_BUILD-unsigned.ipa" > SHA256SUMS.txt
           python3 - <<'PY'
-          import json,os,plistlib
+          import hashlib,json,os,plistlib
           from pathlib import Path
           info=plistlib.loads(Path('Payload/Pagewell.app/Info.plist').read_bytes())
-          proof={'name':'Pagewell','version':info['CFBundleShortVersionString'],'build':info['CFBundleVersion'],'bundleId':info['CFBundleIdentifier'],'minimumOS':info['MinimumOSVersion'],'architectures':['arm64'],'unsigned':True,'requiresAppleSigningBeforeInstallation':True,'source':'published Android package web assets','sourceApkSha256':os.environ['PAGEWELL_APK_SHA256'],'workflowCommit':os.environ['GITHUB_SHA'],'nativeSafeAreaLayout':True}
+          proof={'name':'Pagewell','version':info['CFBundleShortVersionString'],'build':info['CFBundleVersion'],'bundleId':info['CFBundleIdentifier'],'minimumOS':info['MinimumOSVersion'],'architectures':['arm64'],'unsigned':True,'requiresAppleSigningBeforeInstallation':True,'sourceKind':os.environ['PAGEWELL_SOURCE_KIND'],'sourceSha256':os.environ['PAGEWELL_SOURCE_SHA256'],'workflowCommit':os.environ['GITHUB_SHA'],'nativeSafeAreaLayout':True}
           Path('IPAD-BUILD.json').write_text(json.dumps(proof,indent=2)+'\n')
+          package=Path('Pagewell-'+os.environ['PAGEWELL_VERSION']+'-iPad-b'+os.environ['PAGEWELL_BUILD']+'-unsigned.ipa')
+          tag=os.environ['PAGEWELL_BUILD_TAG']
+          manifest={'schema':1,'version':info['CFBundleShortVersionString'],'build':int(info['CFBundleVersion']),'bundleId':info['CFBundleIdentifier'],'size':package.stat().st_size,'sha256':hashlib.sha256(package.read_bytes()).hexdigest(),'url':'https://github.com/'+os.environ['GITHUB_REPOSITORY']+'/releases/download/'+tag+'/'+package.name,'notes':os.environ['PAGEWELL_NOTES']}
+          Path('ipad-update.json').write_text(json.dumps(manifest,indent=2)+'\n')
+          Path('RELEASE-NOTES.md').write_text(os.environ['PAGEWELL_NOTES']+'\n')
           PY
           existing_draft=$(gh release view "$PAGEWELL_BUILD_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null || true)
           if [ -n "$existing_draft" ] && [ "$existing_draft" != true ]; then echo 'Refusing to replace a published release'; exit 1; fi
-          if [ -z "$existing_draft" ]; then gh release create "$PAGEWELL_BUILD_TAG" --repo "$GITHUB_REPOSITORY" --draft --prerelease --target "$GITHUB_SHA" --title 'Pagewell iPad installation build' --notes 'Private draft installation package. This IPA is unsigned and must be signed with the device owner’s Apple account before installation. It is not a public iOS release.'; fi
-          gh release upload "$PAGEWELL_BUILD_TAG" --repo "$GITHUB_REPOSITORY" "Pagewell-$PAGEWELL_VERSION-iPad-unsigned.ipa" SHA256SUMS.txt IPAD-BUILD.json --clobber
+          if [ -z "$existing_draft" ]; then gh release create "$PAGEWELL_BUILD_TAG" --repo "$GITHUB_REPOSITORY" --draft --target "$GITHUB_SHA" --title "Pagewell $PAGEWELL_VERSION for iPad (build $PAGEWELL_BUILD)" --notes-file RELEASE-NOTES.md; fi
+          gh release upload "$PAGEWELL_BUILD_TAG" --repo "$GITHUB_REPOSITORY" "Pagewell-$PAGEWELL_VERSION-iPad-b$PAGEWELL_BUILD-unsigned.ipa" SHA256SUMS.txt IPAD-BUILD.json ipad-update.json RELEASE-NOTES.md --clobber
