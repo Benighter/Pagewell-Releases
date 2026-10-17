@@ -17,7 +17,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       PAGEWELL_VERSION: 0.1.8
-      PAGEWELL_BUILD: 1009
+      PAGEWELL_BUILD: 1010
       PAGEWELL_APK_SHA256: ba54659d60cbc4d1429aea4892e3891db1e8cab4a7509266de4f055e7c46150c
       PAGEWELL_BUILD_TAG: ipad-install-0.1.8-20261017
     steps:
@@ -77,6 +77,11 @@ jobs:
               }
           }
           ''')
+          scene=Path('ios/App/App/SceneDelegate.swift')
+          original='window?.rootViewController = CAPBridgeViewController()'
+          text=scene.read_text()
+          assert text.count(original)==1, 'Unexpected Capacitor scene startup'
+          scene.write_text(text.replace(original,'window?.rootViewController = PagewellViewController()'))
           storyboard=Path('ios/App/App/Base.lproj/Main.storyboard')
           original='customClass="CAPBridgeViewController" customModule="Capacitor"'
           text=storyboard.read_text()
