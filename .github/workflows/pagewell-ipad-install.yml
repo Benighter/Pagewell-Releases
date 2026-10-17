@@ -37,32 +37,34 @@ jobs:
           {"appId":"com.benighter.pagewell","appName":"Pagewell","webDir":"dist","ios":{"backgroundColor":"#ffffff","preferredContentMode":"recommended"},"plugins":{"SplashScreen":{"launchShowDuration":0}}}
           JSON
           npm install --no-audit --no-fund
+          export DEVELOPER_DIR=$(python3 - <<'PY'
+          import plistlib,re
+          from pathlib import Path
+          choices=[]
+          for app in Path('/Applications').glob('Xcode*.app'):
+            with (app/'Contents/Info.plist').open('rb') as f: version=plistlib.load(f)['CFBundleShortVersionString']
+            numbers=tuple(int(v) for v in re.findall(r'\d+',version))
+            if numbers and numbers[0]>=26: choices.append(('beta' not in app.name.lower(),numbers,str(app/'Contents/Developer')))
+          if not choices: raise SystemExit('This runner has no Xcode 26 or later')
+          print(max(choices)[2])
+          PY
+          )
+          test -n "$DEVELOPER_DIR"
           npx cap add ios
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
           ICON_DIR=ios/App/App/Assets.xcassets/AppIcon.appiconset
           export ICON_DIR
-          cat > make-icon.swift <<'SWIFT'
-          import AppKit
-          import Foundation
-          let size = NSSize(width: 1024, height: 1024)
-          guard let logo = NSImage(contentsOfFile: "dist/logo.png"),
-                let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 1024, pixelsHigh: 1024, bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
-                let context = NSGraphicsContext(bitmapImageRep: bitmap) else { fatalError("Missing Pagewell icon") }
-          NSGraphicsContext.saveGraphicsState()
-          NSGraphicsContext.current = context
-          NSColor.white.setFill()
-          NSBezierPath(rect: NSRect(origin: .zero, size: size)).fill()
-          logo.draw(in: NSRect(x: 160, y: 160, width: 704, height: 704), from: .zero, operation: .sourceOver, fraction: 1)
-          NSGraphicsContext.restoreGraphicsState()
-          guard let png = bitmap.representation(using: .png, properties: [:]) else { fatalError("Could not encode icon") }
-          let directory = ProcessInfo.processInfo.environment["ICON_DIR"]!
-          try png.write(to: URL(fileURLWithPath: directory + "/Pagewell.png"))
-          SWIFT
-          swift make-icon.swift
-          python3 - <<'PY'
+          test -f dist/logo.png
+          python3 -m pip install --quiet --disable-pip-version-check --no-deps --target "$RUNNER_TEMP/pagewell-image-tools" Pillow==13.0.0
+          PYTHONPATH="$RUNNER_TEMP/pagewell-image-tools" python3 - <<'PY'
           import json,os
           from pathlib import Path
+          from PIL import Image
+          logo=Image.open('dist/logo.png').convert('RGBA').resize((704,704),Image.Resampling.LANCZOS)
+          icon=Image.new('RGB',(1024,1024),'white')
+          icon.paste(logo,(160,160),logo)
+          icon.save(Path(os.environ['ICON_DIR'])/'Pagewell.png')
           p=Path(os.environ['ICON_DIR'])/'Contents.json'
           p.write_text(json.dumps({'images':[{'filename':'Pagewell.png','idiom':'universal','platform':'ios','size':'1024x1024'}],'info':{'author':'xcode','version':1}}))
           PY
