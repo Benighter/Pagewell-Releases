@@ -1,0 +1,90 @@
+name: Pagewell iPad installation build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pagewell-ipad-install
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PAGEWELL_VERSION: 0.1.8
+      PAGEWELL_APK_SHA256: ba54659d60cbc4d1429aea4892e3891db1e8cab4a7509266de4f055e7c46150c
+      PAGEWELL_BUILD_TAG: ipad-install-0.1.8-20261017
+    steps:
+      - name: Build an unsigned native iPad package from the published app
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/pagewell-ipad"
+          cd "$RUNNER_TEMP/pagewell-ipad"
+          gh release download "v$PAGEWELL_VERSION" --repo "$GITHUB_REPOSITORY" --pattern "Pagewell-$PAGEWELL_VERSION.apk" --output source.apk
+          echo "$PAGEWELL_APK_SHA256  source.apk" | shasum -a 256 --check
+          unzip -q source.apk 'assets/public/*' -d extracted
+          mv extracted/assets/public dist
+          cat > package.json <<'JSON'
+          {"name":"pagewell-ipad","version":"0.1.8","private":true,"dependencies":{"@capacitor/core":"8.5.3","@capacitor/ios":"8.5.3","@capacitor/cli":"8.5.3"}}
+          JSON
+          cat > capacitor.config.json <<'JSON'
+          {"appId":"com.benighter.pagewell","appName":"Pagewell","webDir":"dist","ios":{"backgroundColor":"#ffffff","preferredContentMode":"recommended"},"plugins":{"SplashScreen":{"launchShowDuration":0}}}
+          JSON
+          npm install --no-audit --no-fund
+          npx cap add ios
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          ICON_DIR=ios/App/App/Assets.xcassets/AppIcon.appiconset
+          export ICON_DIR
+          cat > make-icon.swift <<'SWIFT'
+          import AppKit
+          import Foundation
+          let size = NSSize(width: 1024, height: 1024)
+          guard let logo = NSImage(contentsOfFile: "dist/logo.png"),
+                let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 1024, pixelsHigh: 1024, bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
+                let context = NSGraphicsContext(bitmapImageRep: bitmap) else { fatalError("Missing Pagewell icon") }
+          NSGraphicsContext.saveGraphicsState()
+          NSGraphicsContext.current = context
+          NSColor.white.setFill()
+          NSBezierPath(rect: NSRect(origin: .zero, size: size)).fill()
+          logo.draw(in: NSRect(x: 160, y: 160, width: 704, height: 704), from: .zero, operation: .sourceOver, fraction: 1)
+          NSGraphicsContext.restoreGraphicsState()
+          guard let png = bitmap.representation(using: .png, properties: [:]) else { fatalError("Could not encode icon") }
+          let directory = ProcessInfo.processInfo.environment["ICON_DIR"]!
+          try png.write(to: URL(fileURLWithPath: directory + "/Pagewell.png"))
+          SWIFT
+          swift make-icon.swift
+          python3 - <<'PY'
+          import json,os
+          from pathlib import Path
+          p=Path(os.environ['ICON_DIR'])/'Contents.json'
+          p.write_text(json.dumps({'images':[{'filename':'Pagewell.png','idiom':'universal','platform':'ios','size':'1024x1024'}],'info':{'author':'xcode','version':1}}))
+          PY
+          xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Release -destination 'generic/platform=iOS' -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' MARKETING_VERSION="$PAGEWELL_VERSION" CURRENT_PROJECT_VERSION=1008 build > xcode-build.log 2>&1 || { tail -n 100 xcode-build.log; exit 1; }
+          APP=build/Build/Products/Release-iphoneos/App.app
+          test -d "$APP"
+          test "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$APP/Info.plist")" = com.benighter.pagewell
+          test "$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$APP/Info.plist")" = "$PAGEWELL_VERSION"
+          file "$APP/App" | tee executable-architecture.txt
+          file "$APP/App" | grep -q arm64
+          mkdir Payload
+          ditto "$APP" Payload/Pagewell.app
+          ditto -c -k --sequesterRsrc --keepParent Payload "Pagewell-$PAGEWELL_VERSION-iPad-unsigned.ipa"
+          shasum -a 256 "Pagewell-$PAGEWELL_VERSION-iPad-unsigned.ipa" > SHA256SUMS.txt
+          python3 - <<'PY'
+          import json,os,plistlib
+          from pathlib import Path
+          info=plistlib.loads(Path('Payload/Pagewell.app/Info.plist').read_bytes())
+          proof={'name':'Pagewell','version':info['CFBundleShortVersionString'],'build':info['CFBundleVersion'],'bundleId':info['CFBundleIdentifier'],'minimumOS':info['MinimumOSVersion'],'architectures':['arm64'],'unsigned':True,'requiresAppleSigningBeforeInstallation':True,'source':'published Android package web assets','sourceApkSha256':os.environ['PAGEWELL_APK_SHA256'],'workflowCommit':os.environ['GITHUB_SHA']}
+          Path('IPAD-BUILD.json').write_text(json.dumps(proof,indent=2)+'\n')
+          PY
+          existing_draft=$(gh release view "$PAGEWELL_BUILD_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null || true)
+          if [ -n "$existing_draft" ] && [ "$existing_draft" != true ]; then echo 'Refusing to replace a published release'; exit 1; fi
+          if [ -z "$existing_draft" ]; then gh release create "$PAGEWELL_BUILD_TAG" --repo "$GITHUB_REPOSITORY" --draft --prerelease --target "$GITHUB_SHA" --title 'Pagewell iPad installation build' --notes 'Private draft installation package. This IPA is unsigned and must be signed with the device owner’s Apple account before installation. It is not a public iOS release.'; fi
+          gh release upload "$PAGEWELL_BUILD_TAG" --repo "$GITHUB_REPOSITORY" "Pagewell-$PAGEWELL_VERSION-iPad-unsigned.ipa" SHA256SUMS.txt IPAD-BUILD.json --clobber
