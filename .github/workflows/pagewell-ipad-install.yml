@@ -87,7 +87,7 @@ jobs:
           {"name":"pagewell-ipad","version":"0.1.8","private":true,"dependencies":{"@capacitor/core":"8.5.3","@capacitor/ios":"8.5.3","@capacitor/cli":"8.5.3"}}
           JSON
           cat > capacitor.config.json <<'JSON'
-          {"appId":"com.benighter.pagewell","appName":"Pagewell","webDir":"dist","ios":{"backgroundColor":"#ffffff","preferredContentMode":"recommended"},"plugins":{"SplashScreen":{"launchShowDuration":0}}}
+          {"appId":"com.benighter.pagewell","appName":"Pagewell","webDir":"dist","ios":{"backgroundColor":"#ffffff","preferredContentMode":"recommended","zoomEnabled":false},"plugins":{"SplashScreen":{"launchShowDuration":0}}}
           JSON
           npm install --no-audit --no-fund
           export DEVELOPER_DIR=$(python3 - <<'PY'
@@ -118,11 +118,15 @@ jobs:
                   container.backgroundColor = .systemBackground
                   view = container
                   webView.translatesAutoresizingMaskIntoConstraints = false
+                  webView.scrollView.pinchGestureRecognizer?.isEnabled = false
+                  webView.scrollView.bounces = false
+                  webView.scrollView.contentInsetAdjustmentBehavior = .never
+                  webView.scrollView.automaticallyAdjustsScrollIndicatorInsets = false
                   container.addSubview(webView)
                   let safeArea = container.safeAreaLayoutGuide
                   NSLayoutConstraint.activate([
                       webView.topAnchor.constraint(equalTo: safeArea.topAnchor),
-                      webView.bottomAnchor.constraint(equalTo: safeArea.bottomAnchor),
+                      webView.bottomAnchor.constraint(equalTo: container.keyboardLayoutGuide.topAnchor),
                       webView.leadingAnchor.constraint(equalTo: safeArea.leadingAnchor),
                       webView.trailingAnchor.constraint(equalTo: safeArea.trailingAnchor)
                   ])
